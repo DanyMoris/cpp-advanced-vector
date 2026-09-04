@@ -105,31 +105,29 @@ public:
     }
 
     Vector& operator=(const Vector& rhs) {
-        if (this != &rhs) {
-            if (rhs.size_ > data_.Capacity()) {
-                Vector<T> tmp(rhs);
-                Swap(tmp);
-            }
-            else {
-                if (rhs.size_ < size_) {
-                    for (size_t i = 0; i < rhs.size_; ++i) {
-                        data_[i] = rhs.data_[i];
-                    }
-                    std::destroy_n(data_.GetAddress() + rhs.size_, size_ - rhs.size_);
-                }
-                else {
-                    for (size_t i = 0; i < size_; ++i) {
-                        data_[i] = rhs.data_[i];
-                    }
-                    std::uninitialized_copy_n(
-                        rhs.data_.GetAddress() + size_,
-                        rhs.size_ - size_,
-                        data_.GetAddress() + size_
-                    );
-                }
-                size_ = rhs.size_;
-            }
+        if (this == &rhs) {
+            return *this;
         }
+
+        if (rhs.size_ > data_.Capacity()) {
+            Vector<T> tmp(rhs);
+            Swap(tmp);
+            return *this;
+        }
+
+        if (rhs.size_ < size_) {
+            std::copy_n(rhs.data_.GetAddress(), rhs.size_, data_.GetAddress());
+            std::destroy_n(data_.GetAddress() + rhs.size_, size_ - rhs.size_);
+        }
+        else {
+            std::copy_n(rhs.data_.GetAddress(), size_, data_.GetAddress());
+            std::uninitialized_copy_n(
+                rhs.data_.GetAddress() + size_,
+                rhs.size_ - size_,
+                data_.GetAddress() + size_
+            );
+        }
+        size_ = rhs.size_;
         return *this;
     }
 
@@ -144,51 +142,66 @@ public:
         std::destroy_n(data_.GetAddress(), size_);
     }
 
-    // Iterators
-    iterator begin() noexcept { return data_.GetAddress(); }
-    iterator end() noexcept { return data_.GetAddress() + size_; }
-    const_iterator begin() const noexcept { return data_.GetAddress(); }
-    const_iterator end() const noexcept { return data_.GetAddress() + size_; }
-    const_iterator cbegin() const noexcept { return data_.GetAddress(); }
-    const_iterator cend() const noexcept { return data_.GetAddress() + size_; }
+    iterator begin() noexcept {
+        return data_.GetAddress();
+    }
 
-    // Insertion
+    iterator end() noexcept {
+        return data_.GetAddress() + size_;
+    }
+
+    const_iterator begin() const noexcept {
+        return data_.GetAddress();
+    }
+
+    const_iterator end() const noexcept {
+        return data_.GetAddress() + size_;
+    }
+
+    const_iterator cbegin() const noexcept {
+        return data_.GetAddress();
+    }
+
+    const_iterator cend() const noexcept {
+        return data_.GetAddress() + size_;
+    }
+
+
+private:
+    void MoveOrCopyRange(const T* src, T* dst, size_t count) {
+        if constexpr (std::is_nothrow_move_constructible_v<T> || !std::is_copy_constructible_v<T>) {
+            std::uninitialized_move_n(src, count, dst);
+        }
+        else {
+            std::uninitialized_copy_n(src, count, dst);
+        }
+    }
+
+public:
     template <typename... Args>
     iterator Emplace(const_iterator pos, Args&&... args) {
         assert(pos >= begin() && pos <= end());
-        size_t index = pos - begin();
+        const size_t index = pos - begin();
 
-        if (size_ == Capacity()) {
-            RawMemory<T> new_data(size_ == 0 ? 1 : size_ * 2);
+        if (size_ == data_.Capacity()) {
+            const size_t new_capacity = (size_ == 0) ? 1 : size_ * 2;
+            RawMemory<T> new_data(new_capacity);
 
-            // Construct new element directly in temporary buffer first
+
             new (new_data + index) T(std::forward<Args>(args)...);
 
-            // Relocate elements before insertion point
             try {
-                if constexpr (std::is_nothrow_move_constructible_v<T> || !std::is_copy_constructible_v<T>) {
-                    std::uninitialized_move_n(data_.GetAddress(), index, new_data.GetAddress());
-                }
-                else {
-                    std::uninitialized_copy_n(data_.GetAddress(), index, new_data.GetAddress());
-                }
+
+                MoveOrCopyRange(data_.GetAddress(), new_data.GetAddress(), index);
+
+                MoveOrCopyRange(
+                    data_.GetAddress() + index,
+                    new_data.GetAddress() + index + 1,
+                    size_ - index
+                );
             }
             catch (...) {
                 std::destroy_at(new_data + index);
-                throw;
-            }
-
-            // Relocate elements after insertion point
-            try {
-                if constexpr (std::is_nothrow_move_constructible_v<T> || !std::is_copy_constructible_v<T>) {
-                    std::uninitialized_move_n(data_.GetAddress() + index, size_ - index, new_data + index + 1);
-                }
-                else {
-                    std::uninitialized_copy_n(data_.GetAddress() + index, size_ - index, new_data + index + 1);
-                }
-            }
-            catch (...) {
-                std::destroy_n(new_data.GetAddress(), index + 1);
                 throw;
             }
 
@@ -202,7 +215,11 @@ public:
             else {
                 T temp(std::forward<Args>(args)...);
                 new (data_ + size_) T(std::move(data_[size_ - 1]));
-                std::move_backward(data_.GetAddress() + index, data_.GetAddress() + size_ - 1, data_.GetAddress() + size_);
+                std::move_backward(
+                    data_.GetAddress() + index,
+                    data_.GetAddress() + size_ - 1,
+                    data_.GetAddress() + size_
+                );
                 data_[index] = std::move(temp);
             }
         }
@@ -211,26 +228,23 @@ public:
         return begin() + index;
     }
 
-
     iterator Erase(const_iterator first, const_iterator last) noexcept(std::is_nothrow_move_assignable_v<T>) {
         assert(first >= begin() && last <= end() && first <= last);
-        size_t first_idx = first - begin();
-        size_t count = last - first;
+        const size_t first_idx = first - begin();
+        const size_t count = last - first;
 
-        if (count > 0) {
-            iterator mutable_first = begin() + first_idx;
-            iterator mutable_last = mutable_first + count;
-
-
-            std::move(mutable_last, end(), mutable_first);
-
-            std::destroy_n(end() - count, count);
-
-
-            size_ -= count;
+        if (count == 0) {
+            return begin() + first_idx;
         }
 
-        return begin() + first_idx;
+        iterator mutable_first = begin() + first_idx;
+        iterator mutable_last = mutable_first + count;
+
+        std::move(mutable_last, end(), mutable_first);
+        std::destroy_n(end() - count, count);
+        size_ -= count;
+
+        return mutable_first;
     }
 
     iterator Erase(const_iterator pos) noexcept(std::is_nothrow_move_assignable_v<T>) {
@@ -269,14 +283,9 @@ public:
         if (new_capacity <= data_.Capacity()) {
             return;
         }
-        RawMemory<T> new_data(new_capacity);
 
-        if constexpr (std::is_nothrow_move_constructible_v<T> || !std::is_copy_constructible_v<T>) {
-            std::uninitialized_move_n(data_.GetAddress(), size_, new_data.GetAddress());
-        }
-        else {
-            std::uninitialized_copy_n(data_.GetAddress(), size_, new_data.GetAddress());
-        }
+        RawMemory<T> new_data(new_capacity);
+        MoveOrCopyRange(data_.GetAddress(), new_data.GetAddress(), size_);
 
         std::destroy_n(data_.GetAddress(), size_);
         data_.Swap(new_data);
@@ -299,9 +308,18 @@ public:
         std::swap(size_, other.size_);
     }
 
-    const T& Back() const noexcept { return data_[size_ - 1]; }
-    size_t Size() const noexcept { return size_; }
-    size_t Capacity() const noexcept { return data_.Capacity(); }
+    const T& Back() const noexcept {
+        assert(size_ != 0);
+        return data_[size_ - 1];
+    }
+
+    size_t Size() const noexcept {
+        return size_;
+    }
+
+    size_t Capacity() const noexcept {
+        return data_.Capacity();
+    }
 
     const T& operator[](size_t index) const noexcept {
         assert(index < size_);
